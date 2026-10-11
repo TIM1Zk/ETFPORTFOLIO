@@ -16,6 +16,9 @@ import {
   PolarAngleAxis,
   PolarRadiusAxis,
   Radar,
+  LineChart,
+  Line,
+  CartesianGrid,
 } from "recharts";
 import {
   TrendingUp,
@@ -25,7 +28,6 @@ import {
   DollarSign,
   Trophy,
   RefreshCw,
-  ExternalLink,
   Search,
   Layers,
   Sparkles,
@@ -42,12 +44,9 @@ import {
   Activity,
   ArrowUpRight,
   ArrowDownRight,
-  CheckCircle2,
-  Filter,
-  DollarSign as UsdIcon,
-  Briefcase,
   Target,
-  Zap,
+  Sliders,
+  History,
 } from "lucide-react";
 
 interface PortfolioSummary {
@@ -80,7 +79,11 @@ interface HistoryPoint {
   returnTHB: number;
 }
 
-const SHEET_ID = "1qRZlkq9Xyf4gS84_kLZT4hKJFC1D2gN5Z1sgYPJwTzw";
+interface ExchangeRateInfo {
+  rate: number;
+  source: string;
+  updatedAt: string;
+}
 
 const ASSET_METADATA: Record<
   string,
@@ -112,15 +115,12 @@ const PALETTE = [
 ];
 
 export default function LuxuryDashboard() {
-  const [summary, setSummary] = useState<PortfolioSummary>({
-    period: "2026-08",
-    name: "Core",
-    costTHB: 200.0,
-    valueTHB: 200.93,
-    returnTHB: 0.93,
-    assetCount: 17,
-  });
-  const [assets, setAssets] = useState<AssetHolding[]>([]);
+  const [portfolioList, setPortfolioList] = useState<PortfolioSummary[]>([]);
+  const [allAssets, setAllAssets] = useState<AssetHolding[]>([]);
+  const [historyData, setHistoryData] = useState<HistoryPoint[]>([]);
+  const [availablePeriods, setAvailablePeriods] = useState<string[]>([]);
+  const [selectedPeriod, setSelectedPeriod] = useState<string>("2026-09");
+  
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [filterType, setFilterType] = useState<"all" | "gain" | "loss" | "neutral">("all");
@@ -130,8 +130,12 @@ export default function LuxuryDashboard() {
     dir: "desc",
   });
   const [toastMsg, setToastMsg] = useState<string | null>(null);
-  const [usdThbRate, setUsdThbRate] = useState<number>(34.76);
-  const [activeTab, setActiveTab] = useState<"all" | "analytics" | "holdings">("all");
+
+  // FX Rate Modes: 'market' (Real-time live rate) vs 'implied' (Sheet THB/USD ratio)
+  const [fxMode, setFxMode] = useState<"market" | "implied">("market");
+  const [marketFxRate, setMarketFxRate] = useState<number>(33.53);
+  const [fxSourceInfo, setFxSourceInfo] = useState<string>("Open Exchange Rates");
+  const [lastSyncTime, setLastSyncTime] = useState<string>("");
 
   const showToast = (msg: string) => {
     setToastMsg(msg);
@@ -145,22 +149,40 @@ export default function LuxuryDashboard() {
       const json = await res.json();
 
       if (json.success && json.data) {
-        if (json.data.portfolio) {
-          setSummary(json.data.portfolio);
+        const { portfolioList: pList, portfolio, assets: rawAssets, history, periods, exchangeRate } = json.data;
+        
+        if (pList && pList.length > 0) {
+          setPortfolioList(pList);
+        } else if (portfolio) {
+          setPortfolioList([portfolio]);
         }
 
-        if (json.data.assets && json.data.assets.length > 0) {
-          setAssets(json.data.assets);
-          const totalValUSD = json.data.assets.reduce((sum: number, a: AssetHolding) => sum + a.usd, 0);
-          if (totalValUSD > 0 && json.data.portfolio?.valueTHB > 0) {
-            setUsdThbRate(json.data.portfolio.valueTHB / totalValUSD);
+        if (rawAssets && rawAssets.length > 0) {
+          setAllAssets(rawAssets);
+        }
+
+        if (history) {
+          setHistoryData(history);
+        }
+
+        if (periods && periods.length > 0) {
+          setAvailablePeriods(periods);
+          if (!periods.includes(selectedPeriod)) {
+            setSelectedPeriod(periods[0]);
           }
         }
-        showToast("ซิงค์ข้อมูลสดจาก Google Sheets เรียบร้อยแล้ว");
+
+        if (exchangeRate?.rate) {
+          setMarketFxRate(exchangeRate.rate);
+          if (exchangeRate.source) setFxSourceInfo(exchangeRate.source);
+        }
+
+        setLastSyncTime(new Date().toLocaleTimeString("th-TH"));
+        showToast("ซิงค์ข้อมูลสดจาก Google Sheets และอัตราแลกเปลี่ยนสำเร็จ");
       }
     } catch (err) {
       console.warn("Fetch error:", err);
-      showToast("แสดงผลข้อมูลล่าสุด");
+      showToast("ไม่สามารถซิงค์ข้อมูลสดได้ ใช้ข้อมูลแคชล่าสุด");
     } finally {
       setLoading(false);
     }
@@ -170,8 +192,45 @@ export default function LuxuryDashboard() {
     fetchData();
   }, []);
 
+  // Current Summary according to selectedPeriod
+  const summary = useMemo<PortfolioSummary>(() => {
+    const found = portfolioList.find((p) => p.period === selectedPeriod);
+    if (found) return found;
+    if (portfolioList.length > 0) return portfolioList[0];
+    return {
+      period: selectedPeriod,
+      name: "Core",
+      costTHB: 400.0,
+      valueTHB: 595.0,
+      returnTHB: -5.93,
+      assetCount: 17,
+    };
+  }, [portfolioList, selectedPeriod]);
+
+  // Current Assets filtered by selectedPeriod
+  const currentAssets = useMemo<AssetHolding[]>(() => {
+    if (allAssets.length === 0) return [];
+    const filtered = allAssets.filter((a) => a.period === selectedPeriod);
+    return filtered.length > 0 ? filtered : allAssets;
+  }, [allAssets, selectedPeriod]);
+
+  // Implied Rate from Google Sheets (THB Value / Total USD)
+  const impliedFxRate = useMemo<number>(() => {
+    const totalUSD = currentAssets.reduce((sum, a) => sum + a.usd, 0);
+    if (totalUSD > 0 && summary.valueTHB > 0) {
+      return summary.valueTHB / totalUSD;
+    }
+    return 34.5;
+  }, [currentAssets, summary.valueTHB]);
+
+  // Active Effective Rate
+  const activeFxRate = useMemo<number>(() => {
+    return fxMode === "market" ? marketFxRate : impliedFxRate;
+  }, [fxMode, marketFxRate, impliedFxRate]);
+
+  // Enriched Assets
   const enrichedAssets = useMemo(() => {
-    return assets.map((a) => {
+    return currentAssets.map((a) => {
       const meta = ASSET_METADATA[a.ticker] || {
         category: a.ticker === "USD" ? "Cash & Equivalents" : "Other ETF",
         region: a.ticker === "USD" ? "Cash" : "Global",
@@ -182,7 +241,7 @@ export default function LuxuryDashboard() {
       };
       return {
         ...a,
-        thbValue: a.usd * usdThbRate,
+        thbValue: a.usd * activeFxRate,
         category: a.category || meta.category,
         region: a.region || meta.region,
         expenseRatio: a.expenseRatio || meta.expenseRatio,
@@ -190,7 +249,7 @@ export default function LuxuryDashboard() {
         riskScore: a.riskScore || meta.risk,
       };
     });
-  }, [assets, usdThbRate]);
+  }, [currentAssets, activeFxRate]);
 
   const totalUSD = useMemo(() => {
     return enrichedAssets.reduce((sum, item) => sum + item.usd, 0);
@@ -201,10 +260,19 @@ export default function LuxuryDashboard() {
     return cashItem ? cashItem.usd : 0;
   }, [enrichedAssets]);
 
+  // Value in THB: if in market FX mode, show computed THB (totalUSD * marketRate)
+  const computedTHBValue = useMemo(() => {
+    if (fxMode === "market") {
+      return totalUSD * marketFxRate;
+    }
+    return summary.valueTHB;
+  }, [fxMode, totalUSD, marketFxRate, summary.valueTHB]);
+
   const returnPercentage = useMemo(() => {
     if (summary.costTHB <= 0) return 0;
-    return ((summary.valueTHB - summary.costTHB) / summary.costTHB) * 100;
-  }, [summary]);
+    const netReturn = fxMode === "market" ? (computedTHBValue - summary.costTHB) : summary.returnTHB;
+    return (netReturn / summary.costTHB) * 100;
+  }, [summary, fxMode, computedTHBValue]);
 
   const winningCount = useMemo(() => enrichedAssets.filter((a) => a.pnl > 0).length, [enrichedAssets]);
   const losingCount = useMemo(() => enrichedAssets.filter((a) => a.pnl < 0).length, [enrichedAssets]);
@@ -298,36 +366,25 @@ export default function LuxuryDashboard() {
 
   const exportCSV = () => {
     const headers = "Ticker,Name,Category,Region,USD_Value,THB_Value,Weight_Pct,PnL_Pct,Shares,Expense_Ratio,Dividend_Yield,Risk\n";
-    const rows = enrichedAssets
-      .map((a) => {
-        const weight = totalUSD > 0 ? ((a.usd / totalUSD) * 100).toFixed(2) : "0";
-        return `"${a.ticker}","${a.name}","${a.category}","${a.region}",${a.usd},${(a.usd * usdThbRate).toFixed(2)},${weight}%,${a.pnl}%,${a.shares},"${a.expenseRatio}","${a.dividendYield}","${a.riskScore}"`;
-      })
-      .join("\n");
-    const blob = new Blob([headers + rows], { type: "text/csv;charset=utf-8;" });
+    const rows = enrichedAssets.map((a) => {
+      const weight = totalUSD > 0 ? ((a.usd / totalUSD) * 100).toFixed(2) : "0";
+      return `"${a.ticker}","${a.name}","${a.category}","${a.region}",${a.usd},${(a.usd * activeFxRate).toFixed(2)},${weight}%,${a.pnl}%,${a.shares},"${a.expenseRatio}","${a.dividendYield}","${a.riskScore}"`;
+    });
+    const blob = new Blob([headers + rows.join("\n")], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.setAttribute("download", `ETF_Portfolio_Report_${summary.period}.csv`);
+    link.setAttribute("download", `ETF_Portfolio_${selectedPeriod}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    showToast("ส่งออกไฟล์ CSV สำเร็จ");
+    showToast("ดาวน์โหลดไฟล์ CSV เรียบร้อยแล้ว");
   };
 
   return (
-    <div className="min-h-screen text-slate-100 p-4 sm:p-6 lg:p-8 max-w-[1580px] mx-auto relative font-sans selection:bg-cyan-400 selection:text-black">
-      {/* Dynamic Background Mesh */}
-      <div className="fixed inset-0 pointer-events-none -z-10 overflow-hidden">
-        <div className="absolute top-0 left-1/4 w-[600px] h-[600px] bg-blue-600/10 rounded-full blur-[160px] animate-glow" />
-        <div className="absolute top-1/3 right-1/4 w-[600px] h-[600px] bg-purple-600/10 rounded-full blur-[160px] animate-glow" />
-        <div className="absolute bottom-10 left-1/3 w-[500px] h-[500px] bg-cyan-600/10 rounded-full blur-[140px]" />
-      </div>
-
-      {/* Top Navbar / Header Bar */}
-      <header className="glass-panel rounded-3xl p-5 sm:p-7 mb-8 flex flex-col xl:flex-row justify-between items-start xl:items-center gap-6 relative overflow-hidden">
-        <div className="absolute -top-24 -right-24 w-72 h-72 bg-gradient-to-br from-blue-500/20 to-purple-500/0 rounded-full blur-3xl pointer-events-none" />
-
+    <div className="min-h-screen text-slate-100 p-4 sm:p-6 lg:p-10 max-w-[1680px] mx-auto transition-colors duration-300">
+      {/* Top Header */}
+      <header className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-6 mb-8 pb-6 border-b border-white/10">
         <div className="flex items-center gap-4 sm:gap-5">
           <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl bg-gradient-to-tr from-blue-600 via-indigo-600 to-cyan-400 p-[1px] shadow-2xl shadow-blue-500/25 flex-shrink-0">
             <div className="w-full h-full bg-slate-950/80 rounded-2xl flex items-center justify-center backdrop-blur-xl">
@@ -344,35 +401,85 @@ export default function LuxuryDashboard() {
               </span>
             </div>
             <p className="text-xs sm:text-sm text-slate-400 mt-1">
-              ระบบวิเคราะห์ข้อมูลพอร์ตการลงทุนแบบ Multi-Asset พร้อม Live Google Sheets Integration
+              ระบบวิเคราะห์ข้อมูลพอร์ตการลงทุนแบบ Multi-Asset พร้อม Live Google Sheets Integration & Live FX Engine
             </p>
           </div>
         </div>
 
         {/* Top Actions & Quick Stats */}
         <div className="flex flex-wrap items-center gap-3 w-full xl:w-auto">
-          <div className="glass-pill px-4 py-2 rounded-2xl flex items-center gap-2 text-xs font-medium text-slate-300">
+          {/* Period Selector */}
+          <div className="glass-pill px-3 py-1.5 rounded-2xl flex items-center gap-2 text-xs font-medium text-slate-300">
             <Calendar className="w-4 h-4 text-cyan-400" />
-            <span>รอบเดือน: <strong className="text-white font-semibold">{summary.period}</strong></span>
+            <span>รอบเดือน:</span>
+            <select
+              value={selectedPeriod}
+              onChange={(e) => setSelectedPeriod(e.target.value)}
+              className="bg-slate-900 border border-white/20 rounded-xl px-2.5 py-1 text-xs text-white font-bold outline-none cursor-pointer focus:border-cyan-400"
+            >
+              {availablePeriods.length > 0 ? (
+                availablePeriods.map((p) => (
+                  <option key={p} value={p}>
+                    {p} {p === availablePeriods[0] ? "(ล่าสุด)" : ""}
+                  </option>
+                ))
+              ) : (
+                <option value={summary.period}>{summary.period}</option>
+              )}
+            </select>
           </div>
 
-          <div className="glass-pill px-4 py-2 rounded-2xl flex items-center gap-2 text-xs font-medium text-slate-300">
+          {/* Real-time Currency Converter Control */}
+          <div className="glass-pill px-3 py-1.5 rounded-2xl flex items-center gap-2.5 text-xs font-medium text-slate-300">
             <Activity className="w-4 h-4 text-emerald-400" />
-            <span>1 USD ≈ <strong className="text-emerald-400 font-mono font-semibold">฿{usdThbRate.toFixed(2)}</strong></span>
+            <div className="flex items-center gap-1.5">
+              <span>1 USD =</span>
+              <strong className="text-emerald-400 font-mono font-semibold">
+                ฿{activeFxRate.toFixed(2)}
+              </strong>
+            </div>
+            {/* Toggle FX Mode */}
+            <div className="flex items-center bg-slate-950/80 p-0.5 rounded-lg border border-white/10 text-[10px]">
+              <button
+                onClick={() => setFxMode("market")}
+                title={`ตลาดจริง (${fxSourceInfo}): ฿${marketFxRate.toFixed(2)}`}
+                className={`px-2 py-0.5 rounded-md font-semibold transition ${
+                  fxMode === "market"
+                    ? "bg-emerald-500 text-slate-950 font-bold shadow-sm"
+                    : "text-slate-400 hover:text-white"
+                }`}
+              >
+                Live FX
+              </button>
+              <button
+                onClick={() => setFxMode("implied")}
+                title={`คำนวณจาก Sheets: ฿${impliedFxRate.toFixed(2)}`}
+                className={`px-2 py-0.5 rounded-md font-semibold transition ${
+                  fxMode === "implied"
+                    ? "bg-cyan-500 text-slate-950 font-bold shadow-sm"
+                    : "text-slate-400 hover:text-white"
+                }`}
+              >
+                Sheet
+              </button>
+            </div>
           </div>
 
+          {/* Refresh Button */}
           <button
             onClick={fetchData}
             disabled={loading}
             className="glass-pill hover:bg-white/10 px-4 py-2 rounded-2xl text-xs font-semibold text-slate-200 flex items-center gap-2 transition duration-200 cursor-pointer disabled:opacity-50"
+            title={lastSyncTime ? `อัปเดตล่าสุด: ${lastSyncTime}` : "กดเพื่อรีเฟรชข้อมูล"}
           >
             <RefreshCw className={`w-3.5 h-3.5 text-cyan-400 ${loading ? "animate-spin" : ""}`} />
-            <span>รีเฟรช</span>
+            <span>รีเฟรช {lastSyncTime && `(${lastSyncTime})`}</span>
           </button>
 
+          {/* CSV Export */}
           <button
             onClick={exportCSV}
-            className="glass-pill hover:bg-white/10 px-4 py-2 rounded-2xl text-xs font-semibold text-slate-200 flex items-center gap-2 transition duration-200"
+            className="glass-pill hover:bg-white/10 px-4 py-2 rounded-2xl text-xs font-semibold text-slate-200 flex items-center gap-2 transition duration-200 cursor-pointer"
           >
             <Download className="w-3.5 h-3.5 text-purple-400" />
             <span>CSV</span>
@@ -392,7 +499,7 @@ export default function LuxuryDashboard() {
             </div>
           </div>
           <div className="text-2xl sm:text-3xl font-black text-white tracking-tight mb-2">
-            ฿{summary.valueTHB.toFixed(2)}
+            ฿{computedTHBValue.toFixed(2)}
           </div>
           <div className="flex items-center gap-1.5 text-xs font-semibold">
             <span className={`inline-flex items-center gap-0.5 px-2 py-0.5 rounded-lg ${
@@ -401,7 +508,9 @@ export default function LuxuryDashboard() {
               {returnPercentage >= 0 ? <ArrowUpRight className="w-3.5 h-3.5" /> : <ArrowDownRight className="w-3.5 h-3.5" />}
               {returnPercentage >= 0 ? "+" : ""}{returnPercentage.toFixed(2)}%
             </span>
-            <span className="text-slate-400 font-mono text-[11px]">({summary.returnTHB >= 0 ? "+" : ""}฿{summary.returnTHB.toFixed(2)})</span>
+            <span className="text-slate-400 font-mono text-[11px]">
+              ({(computedTHBValue - summary.costTHB) >= 0 ? "+" : ""}฿{(computedTHBValue - summary.costTHB).toFixed(2)})
+            </span>
           </div>
         </div>
 
@@ -436,7 +545,6 @@ export default function LuxuryDashboard() {
             ฿{summary.costTHB.toFixed(2)}
           </div>
           <div className="text-xs text-purple-300 flex items-center gap-1.5">
-            <Briefcase className="w-3.5 h-3.5" />
             <span>พอร์ต: <strong className="text-white">{summary.name}</strong></span>
           </div>
         </div>
@@ -472,11 +580,15 @@ export default function LuxuryDashboard() {
             </div>
           </div>
           <div className="text-2xl sm:text-3xl font-black text-white tracking-tight mb-2 flex items-baseline gap-2">
-            {bestPerformer?.ticker}
-            <span className="text-sm font-bold text-emerald-400">+{bestPerformer?.pnl.toFixed(1)}%</span>
+            {bestPerformer?.ticker || "-"}
+            {bestPerformer && (
+              <span className={`text-sm font-bold ${bestPerformer.pnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                {bestPerformer.pnl >= 0 ? "+" : ""}{bestPerformer.pnl.toFixed(1)}%
+              </span>
+            )}
           </div>
           <div className="text-[11px] text-slate-400 truncate" title={bestPerformer?.name}>
-            {bestPerformer?.name}
+            {bestPerformer?.name || "ไม่มีข้อมูล"}
           </div>
         </div>
 
@@ -490,11 +602,15 @@ export default function LuxuryDashboard() {
             </div>
           </div>
           <div className="text-2xl sm:text-3xl font-black text-white tracking-tight mb-2 flex items-baseline gap-2">
-            {worstPerformer?.ticker}
-            <span className="text-sm font-bold text-rose-400">{worstPerformer?.pnl.toFixed(1)}%</span>
+            {worstPerformer?.ticker || "-"}
+            {worstPerformer && (
+              <span className="text-sm font-bold text-rose-400">
+                {worstPerformer.pnl.toFixed(1)}%
+              </span>
+            )}
           </div>
           <div className="text-[11px] text-slate-400 truncate" title={worstPerformer?.name}>
-            {worstPerformer?.name}
+            {worstPerformer?.name || "ไม่มีข้อมูล"}
           </div>
         </div>
       </div>
@@ -511,7 +627,7 @@ export default function LuxuryDashboard() {
                 </div>
                 <div>
                   <h2 className="text-base font-bold text-white">สัดส่วนสินทรัพย์ (Asset Weight)</h2>
-                  <p className="text-xs text-slate-400">การกระจายตัวของ 17 สินทรัพย์ในพอร์ต</p>
+                  <p className="text-xs text-slate-400">การกระจายตัวของ {enrichedAssets.length} สินทรัพย์ในพอร์ต</p>
                 </div>
               </div>
             </div>
@@ -521,16 +637,17 @@ export default function LuxuryDashboard() {
                 <PieChart>
                   <Pie
                     data={enrichedAssets}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={70}
-                    outerRadius={100}
-                    paddingAngle={3}
                     dataKey="usd"
                     nameKey="ticker"
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={68}
+                    outerRadius={96}
+                    paddingAngle={3}
+                    stroke="none"
                   >
                     {enrichedAssets.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={PALETTE[index % PALETTE.length]} />
+                      <Cell key={`cell-${entry.ticker}-${index}`} fill={PALETTE[index % PALETTE.length]} />
                     ))}
                   </Pie>
                   <Tooltip
@@ -539,11 +656,12 @@ export default function LuxuryDashboard() {
                         const item = payload[0].payload as AssetHolding;
                         const pct = totalUSD > 0 ? ((item.usd / totalUSD) * 100).toFixed(1) : 0;
                         return (
-                          <div className="glass-panel p-3.5 rounded-2xl text-xs shadow-2xl border border-white/20">
-                            <p className="font-bold text-white mb-1 text-sm">{item.ticker} - {item.name}</p>
-                            <p className="text-slate-300">หมวดหมู่: <span className="text-cyan-300 font-semibold">{item.category}</span></p>
-                            <p className="text-slate-300">มูลค่า: <span className="font-bold text-white">${item.usd.toFixed(2)} (฿{(item.usd * usdThbRate).toFixed(2)})</span></p>
-                            <p className="text-slate-300">สัดส่วนพอร์ต: <span className="font-extrabold text-blue-400">{pct}%</span></p>
+                          <div className="glass-panel p-3 rounded-2xl text-xs shadow-2xl border border-white/20">
+                            <p className="font-bold text-white mb-1">{item.ticker} ({pct}%)</p>
+                            <p className="text-slate-300 font-mono">
+                              ${item.usd.toFixed(2)} ≈ ฿{(item.usd * activeFxRate).toFixed(2)}
+                            </p>
+                            <p className="text-slate-400 text-[11px] mt-0.5">{item.name}</p>
                           </div>
                         );
                       }
@@ -588,7 +706,9 @@ export default function LuxuryDashboard() {
                       <span className="w-2 h-2 rounded-full bg-indigo-400" />
                       {reg.region}
                     </span>
-                    <span className="text-slate-400 font-mono">${reg.value.toFixed(2)} (<strong className="text-cyan-300">{reg.pct}%</strong>)</span>
+                    <span className="text-slate-400 font-mono">
+                      ${reg.value.toFixed(2)} (<strong className="text-cyan-300">{reg.pct}%</strong>)
+                    </span>
                   </div>
                   <div className="w-full bg-slate-950 h-2.5 rounded-full overflow-hidden border border-white/5 p-[1px]">
                     <div
@@ -650,6 +770,67 @@ export default function LuxuryDashboard() {
         </div>
       </div>
 
+      {/* History Trend & Multi-Period Performance Section */}
+      {historyData.length > 0 && (
+        <div className="glass-panel rounded-3xl p-6 sm:p-8 mb-8">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400">
+                <History className="w-4 h-4" />
+              </div>
+              <div>
+                <h2 className="text-lg font-bold text-white">ประวัติผลตอบแทนสะสมรายงวด (Historical Performance)</h2>
+                <p className="text-xs text-slate-400">ข้อมูลจาก Google Sheets ชีตประวัติการลงทุนย้อนหลัง</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              {historyData.map((h) => (
+                <div key={h.period} className="glass-pill px-3 py-1.5 rounded-xl text-xs flex items-center gap-2">
+                  <span className="text-slate-400 font-semibold">{h.period}:</span>
+                  <span className={`font-mono font-bold ${h.returnTHB >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                    {h.returnTHB >= 0 ? "+" : ""}฿{h.returnTHB.toFixed(2)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="h-56 w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={historyData} margin={{ top: 15, right: 20, left: -10, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#334155" opacity={0.5} />
+                <XAxis dataKey="period" stroke="#94a3b8" fontSize={11} tickLine={false} />
+                <YAxis stroke="#94a3b8" fontSize={11} tickFormatter={(v) => `฿${v}`} tickLine={false} />
+                <Tooltip
+                  content={({ active, payload }) => {
+                    if (active && payload && payload.length) {
+                      const item = payload[0].payload as HistoryPoint;
+                      return (
+                        <div className="glass-panel p-3 rounded-2xl text-xs shadow-2xl border border-white/20">
+                          <p className="text-slate-400 mb-1">งวด: {item.period}</p>
+                          <p className={`font-extrabold text-sm ${item.returnTHB >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                            ผลตอบแทน: {item.returnTHB >= 0 ? "+" : ""}฿{item.returnTHB.toFixed(2)}
+                          </p>
+                        </div>
+                      );
+                    }
+                    return null;
+                  }}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="returnTHB"
+                  stroke="#38bdf8"
+                  strokeWidth={3}
+                  dot={{ r: 6, fill: "#38bdf8", stroke: "#0f172a", strokeWidth: 2 }}
+                  activeDot={{ r: 8, fill: "#34d399" }}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+
       {/* Performance Bar Chart (Full Width) */}
       <div className="glass-panel rounded-3xl p-6 sm:p-8 mb-8">
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
@@ -658,14 +839,20 @@ export default function LuxuryDashboard() {
               <BarChart3 className="w-4 h-4" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-white">ผลตอบแทนรายสินทรัพย์ในรอบเดือน (%)</h2>
+              <h2 className="text-lg font-bold text-white">ผลตอบแทนรายสินทรัพย์ในงวด {selectedPeriod} (%)</h2>
               <p className="text-xs text-slate-400">เปรียบเทียบอัตราผลตอบแทนแยกตามแต่ละกองทุน</p>
             </div>
           </div>
           <div className="flex items-center gap-4 text-xs">
-            <span className="flex items-center gap-1.5 text-emerald-400 font-semibold"><span className="w-2.5 h-2.5 rounded-full bg-emerald-400 inline-block shadow-sm shadow-emerald-400/50"></span> กำไร</span>
-            <span className="flex items-center gap-1.5 text-rose-400 font-semibold"><span className="w-2.5 h-2.5 rounded-full bg-rose-400 inline-block shadow-sm shadow-rose-400/50"></span> ขาดทุน</span>
-            <span className="flex items-center gap-1.5 text-slate-400 font-semibold"><span className="w-2.5 h-2.5 rounded-full bg-slate-400 inline-block"></span> เสมอ / Cash</span>
+            <span className="flex items-center gap-1.5 text-emerald-400 font-semibold">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 inline-block shadow-sm shadow-emerald-400/50"></span> กำไร
+            </span>
+            <span className="flex items-center gap-1.5 text-rose-400 font-semibold">
+              <span className="w-2.5 h-2.5 rounded-full bg-rose-400 inline-block shadow-sm shadow-rose-400/50"></span> ขาดทุน
+            </span>
+            <span className="flex items-center gap-1.5 text-slate-400 font-semibold">
+              <span className="w-2.5 h-2.5 rounded-full bg-slate-400 inline-block"></span> เสมอ / Cash
+            </span>
           </div>
         </div>
 
@@ -685,7 +872,9 @@ export default function LuxuryDashboard() {
                         <p className={`font-extrabold text-sm ${item.pnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
                           ผลตอบแทน: {item.pnl >= 0 ? "+" : ""}{item.pnl.toFixed(1)}%
                         </p>
-                        <p className="text-slate-300 mt-1">มูลค่า: ${item.usd.toFixed(2)} (฿{(item.usd * usdThbRate).toFixed(2)})</p>
+                        <p className="text-slate-300 mt-1">
+                          มูลค่า: ${item.usd.toFixed(2)} (฿{(item.usd * activeFxRate).toFixed(2)})
+                        </p>
                       </div>
                     );
                   }
@@ -693,9 +882,9 @@ export default function LuxuryDashboard() {
                 }}
               />
               <Bar dataKey="pnl" radius={[8, 8, 0, 0]}>
-                {enrichedAssets.map((entry, index) => (
+                {[...enrichedAssets].sort((a, b) => b.pnl - a.pnl).map((entry, index) => (
                   <Cell
-                    key={`pnl-bar-${index}`}
+                    key={`pnl-bar-${entry.ticker}-${index}`}
                     fill={entry.pnl > 0 ? "#10b981" : entry.pnl < 0 ? "#f43f5e" : "#64748b"}
                   />
                 ))}
@@ -713,8 +902,8 @@ export default function LuxuryDashboard() {
               <Layers className="w-4 h-4" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-white">ตารางวิเคราะห์สินทรัพย์เชิงลึก (In-Depth Holdings Matrix)</h2>
-              <p className="text-xs text-slate-400">ตรวจสอบรายละเอียด ค่าธรรมเนียม เงินปันผล และสัดส่วนอย่างละเอียด</p>
+              <h2 className="text-lg font-bold text-white">ตารางวิเคราะห์สินทรัพย์เชิงลึก (Holdings Matrix)</h2>
+              <p className="text-xs text-slate-400">งวด: <strong className="text-cyan-400">{selectedPeriod}</strong> • ตรวจสอบรายละเอียด ค่าธรรมเนียม เงินปันผล และสัดส่วน</p>
             </div>
           </div>
 
@@ -734,7 +923,7 @@ export default function LuxuryDashboard() {
             <select
               value={selectedRegion}
               onChange={(e) => setSelectedRegion(e.target.value)}
-              className="bg-slate-950/60 border border-white/10 rounded-2xl px-3.5 py-2 text-xs text-slate-200 outline-none focus:border-cyan-400 transition"
+              className="bg-slate-950/60 border border-white/10 rounded-2xl px-3.5 py-2 text-xs text-slate-200 outline-none focus:border-cyan-400 transition cursor-pointer"
             >
               <option value="all">ทุกภูมิภาค</option>
               <option value="US">สหรัฐฯ (US)</option>
@@ -751,7 +940,7 @@ export default function LuxuryDashboard() {
                 <button
                   key={type}
                   onClick={() => setFilterType(type)}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-semibold capitalize transition ${
+                  className={`px-3 py-1.5 rounded-xl text-xs font-semibold capitalize transition cursor-pointer ${
                     filterType === type
                       ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-600/30"
                       : "text-slate-400 hover:text-slate-200"
@@ -769,39 +958,57 @@ export default function LuxuryDashboard() {
           <table className="w-full text-left text-xs sm:text-sm">
             <thead className="bg-slate-950/80 text-slate-400 text-[11px] uppercase tracking-wider border-b border-white/10">
               <tr>
-                <th onClick={() => handleSort("ticker")} className="py-4 px-4 cursor-pointer hover:text-white transition">
-                  <div className="flex items-center gap-1">Ticker <ArrowUpDown className="w-3 h-3 opacity-60" /></div>
+                <th onClick={() => handleSort("ticker")} className="py-3.5 px-4 cursor-pointer hover:text-white transition">
+                  <div className="flex items-center gap-1.5">
+                    <span>Ticker</span>
+                    <ArrowUpDown className="w-3 h-3" />
+                  </div>
                 </th>
-                <th onClick={() => handleSort("name")} className="py-4 px-4 cursor-pointer hover:text-white transition">
-                  <div className="flex items-center gap-1">ชื่อสินทรัพย์ / หมวดหมู่ <ArrowUpDown className="w-3 h-3 opacity-60" /></div>
+                <th onClick={() => handleSort("name")} className="py-3.5 px-4 cursor-pointer hover:text-white transition">
+                  <div className="flex items-center gap-1.5">
+                    <span>ชื่อกองทุน / หมวดหมู่</span>
+                    <ArrowUpDown className="w-3 h-3" />
+                  </div>
                 </th>
-                <th onClick={() => handleSort("region")} className="py-4 px-4 cursor-pointer hover:text-white transition">
-                  <div className="flex items-center gap-1">ภูมิภาค <ArrowUpDown className="w-3 h-3 opacity-60" /></div>
+                <th onClick={() => handleSort("region")} className="py-3.5 px-4 cursor-pointer hover:text-white transition">
+                  <div className="flex items-center gap-1.5">
+                    <span>ภูมิภาค</span>
+                    <ArrowUpDown className="w-3 h-3" />
+                  </div>
                 </th>
-                <th onClick={() => handleSort("usd")} className="py-4 px-4 cursor-pointer hover:text-white transition">
-                  <div className="flex items-center gap-1">มูลค่า ($ / ฿) <ArrowUpDown className="w-3 h-3 opacity-60" /></div>
+                <th onClick={() => handleSort("usd")} className="py-3.5 px-4 cursor-pointer hover:text-white transition">
+                  <div className="flex items-center gap-1.5">
+                    <span>มูลค่า (USD / THB)</span>
+                    <ArrowUpDown className="w-3 h-3" />
+                  </div>
                 </th>
-                <th onClick={() => handleSort("pnl")} className="py-4 px-4 cursor-pointer hover:text-white transition">
-                  <div className="flex items-center gap-1">กำไร / ขาดทุน <ArrowUpDown className="w-3 h-3 opacity-60" /></div>
+                <th onClick={() => handleSort("pnl")} className="py-3.5 px-4 cursor-pointer hover:text-white transition">
+                  <div className="flex items-center gap-1.5">
+                    <span>ผลตอบแทน (%)</span>
+                    <ArrowUpDown className="w-3 h-3" />
+                  </div>
                 </th>
-                <th onClick={() => handleSort("shares")} className="py-4 px-4 cursor-pointer hover:text-white transition">
-                  <div className="flex items-center gap-1">จำนวนหน่วย (Shares) <ArrowUpDown className="w-3 h-3 opacity-60" /></div>
+                <th onClick={() => handleSort("shares")} className="py-3.5 px-4 cursor-pointer hover:text-white transition">
+                  <div className="flex items-center gap-1.5">
+                    <span>หน่วยที่ถือ</span>
+                    <ArrowUpDown className="w-3 h-3" />
+                  </div>
                 </th>
-                <th className="py-4 px-4">Fee / Yield</th>
-                <th className="py-4 px-4">สัดส่วนในพอร์ต (%)</th>
+                <th className="py-3.5 px-4">Expense / Yield</th>
+                <th className="py-3.5 px-4">สัดส่วนพอร์ต</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-white/5">
               {filteredAssets.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-12 text-center text-slate-500 text-sm">
+                  <td colSpan={8} className="text-center py-12 text-slate-500">
                     ไม่พบข้อมูลสินทรัพย์ที่ตรงกับเงื่อนไข
                   </td>
                 </tr>
               ) : (
                 filteredAssets.map((item) => {
                   const weightPct = totalUSD > 0 ? ((item.usd / totalUSD) * 100).toFixed(1) : "0";
-                  const thbVal = (item.usd * usdThbRate).toFixed(2);
+                  const thbVal = (item.usd * activeFxRate).toFixed(2);
                   const isCash = item.ticker === "USD";
                   return (
                     <tr key={item.ticker} className="hover:bg-white/[0.04] transition duration-150">
